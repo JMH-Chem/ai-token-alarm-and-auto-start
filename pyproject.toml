@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tokenalarm"
+version = "0.1.0"
+description = "Claude 구독 사용량 예측 알람 + 리셋 전 남는 사용량으로 지정 작업 자동 실행"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyyaml>=6.0",
+  "platformdirs>=3.0",
+]
+
+[project.optional-dependencies]
+windows = ["win11toast>=0.35; sys_platform == 'win32'"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+tokenalarm = "tokenalarm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tokenalarm = ["examples/*.yaml", "examples/prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
