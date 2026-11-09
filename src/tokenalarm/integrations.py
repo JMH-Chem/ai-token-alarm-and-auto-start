@@ -105,10 +105,16 @@ def statusline_main() -> int:
             state = json.loads(sf.read_text(encoding="utf-8"))
     except Exception:
         state = None
-    if state and state.get("lang"):
+    lang = (state or {}).get("lang")
+    if not lang:  # daemon not running yet: the setup wizard recorded the chosen language
+        try:
+            lang = json.loads((paths.home() / "install.json").read_text(encoding="utf-8")).get("lang")
+        except Exception:
+            lang = None
+    if lang:
         from . import i18n
 
-        i18n.set_lang(state["lang"])  # the daemon knows the configured language; we never parse YAML here
+        i18n.set_lang(lang)  # never parse YAML on this hot path
     try:
         sys.stdout.write(render_statusline(payload, state, now))
     except Exception:

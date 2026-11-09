@@ -35,7 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 tray = ["pystray>=0.19", "pillow>=10"]
 windows = []  # kept so v0.1 instructions (`pip install .[windows]`) still work
-dev = ["pytest>=7", "ruff>=0.5", "build>=1.0", "twine>=5"]
+dev = ["pytest>=7", "ruff>=0.5", "build>=1.0", "twine>=5", "pillow>=10"]
 
 [project.urls]
 Homepage = "https://github.com/JMH-Chem/ai-token-alarm-and-auto-start"

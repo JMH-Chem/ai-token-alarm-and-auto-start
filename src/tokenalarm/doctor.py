@@ -123,7 +123,7 @@ def run_checks(config_path: Path, tasks_path: Path, check_claude: bool = True) -
         missing = [e for e, _ in claude_setup.HOOK_SPECS if e not in st["hooks"]]
         if missing:
             add(Check("hooks", WARN, L("활동 감지 훅 미등록", "Activity hooks not registered"), ", ".join(missing),
-                      "tokenalarm setup --repair"))
+                      "tokenalarm setup-claude"))
         else:
             broken = []
             for ev, entries in st["entries"].items():
@@ -146,7 +146,7 @@ def run_checks(config_path: Path, tasks_path: Path, check_claude: bool = True) -
         if not sl:
             add(Check("statusline", WARN, L("상태줄 미등록 (사용량 수집이 느려짐)", "Status line not registered "
                                                                        "(slower usage updates)"), "",
-                      "tokenalarm setup --repair"))
+                      "tokenalarm setup-claude"))
         elif not st["statusline_ours"]:
             add(Check("statusline", WARN, L("다른 상태줄 사용 중", "Another status line is in use"),
                       str(sl.get("command")), "tokenalarm setup-claude --force-statusline"))

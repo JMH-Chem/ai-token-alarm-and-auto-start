@@ -1,5 +1,11 @@
-# TokenAlarm 설정 — `tokenalarm init` 이 이 파일을 데이터 폴더(%LOCALAPPDATA%\tokenalarm)에 복사합니다.
+# TokenAlarm — 전체 옵션 참조 (Full option reference)
+# `tokenalarm setup` 은 짧은 config.yaml 을 만들고, 이 파일은 참고용으로 데이터 폴더에 복사됩니다.
+# 필요한 키만 config.yaml 에 옮겨 쓰세요. 바꾸면 실행 중인 데몬이 자동으로 다시 읽습니다.
 # 기간 표기: 90s, 45m, 72h, 3d, 1d12h  /  퍼센트는 0~100
+
+config_version: 2
+language: auto        # auto(Windows 언어 따라감) | ko | en
+preset: standard      # standard | conservative | aggressive — weekly_fill_rules 를 쓰면 그것이 우선
 
 # ── 리셋 전 "채우기" 사다리 ─────────────────────────────────────────────
 # 주간 리셋까지 남은 시간이 before_reset 이하가 되면 그 규칙이 적용됩니다(가장 늦은 체크포인트 우선).
@@ -46,6 +52,7 @@ runner:
 
 notify:
   desktop: true
+  desktop_app_id: auto         # auto | tokenalarm | powershell  (토스트가 안 보이면 powershell)
   ntfy:
     url: https://ntfy.sh
     topic: null                # 예: my-secret-tokenalarm-topic-1234 (휴대폰 ntfy 앱에서 같은 토픽 구독)

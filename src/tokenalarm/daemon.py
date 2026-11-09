@@ -278,8 +278,12 @@ class Daemon:
         os.replace(tmp, paths.state_file())
 
     # --------------------------------------------------------------------------------------------
-    def run_forever(self, stop_event: threading.Event | None = None, stop_after: float | None = None) -> None:
-        """Loop until ``stop_event`` is set, a STOP file appears (``tokenalarm stop``), or ``stop_after``."""
+    def run_forever(self, stop_event: threading.Event | None = None, stop_after: float | None = None,
+                    wake_event: threading.Event | None = None) -> None:
+        """Loop until ``stop_event`` is set, a STOP file appears (``tokenalarm stop``), or ``stop_after``.
+
+        ``wake_event`` (tray "refresh now") ends the current wait early.
+        """
         stop_event = stop_event or threading.Event()
         start = time.time()
         while not stop_event.is_set():
@@ -296,6 +300,10 @@ class Daemon:
             deadline = time.monotonic() + max(5.0, self.cfg.daemon.tick_seconds)
             while not stop_event.is_set() and time.monotonic() < deadline:
                 if paths.stop_file().exists():
+                    break
+                if wake_event is not None and wake_event.is_set():
+                    wake_event.clear()
+                    self.store.set("refresh_last", 0)  # force a usage re-read on this tick
                     break
                 stop_event.wait(2.0)
 

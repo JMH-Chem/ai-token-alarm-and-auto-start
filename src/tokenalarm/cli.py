@@ -405,11 +405,26 @@ def cmd_daemon(ctx: Ctx) -> int:
 
 
 def cmd_tray(ctx: Ctx) -> int:
+    if getattr(ctx.args, "render_test", None):
+        if sys.platform in ("win32", "darwin"):  # Linux needs an X display just to import pystray
+            import pystray  # noqa: F401  (fails here if the extra is missing)
+
+        from .tray import render_icon, tooltip
+
+        render_icon(42.0, filling=True).save(ctx.args.render_test)
+        print(tooltip({"week": {"pct": 42, "projected": 60, "seconds_left": 86400}}))
+        return 0
     try:
+        import PIL  # noqa: F401
+        import pystray  # noqa: F401
+
         from .tray import run_tray
     except ImportError:
         print(L('트레이 구성요소가 없습니다: uv tool install --reinstall "tokenalarm[tray]"',
                 'Tray extra missing: uv tool install --reinstall "tokenalarm[tray]"'))
+        return 1
+    except Exception as e:  # e.g. no X display on Linux
+        print(L(f"트레이를 띄울 수 없습니다: {e}", f"Cannot start the tray: {e}"))
         return 1
     return run_tray(ctx)
 
@@ -618,7 +633,8 @@ def build_parser() -> argparse.ArgumentParser:
     un.add_argument("--all", action="store_true")
     un.add_argument("--yes", "-y", action="store_true")
     sub.add_parser("notify-test", help=L("알림 테스트", "send a test notification"))
-    sub.add_parser("tray", help=L("트레이 아이콘 실행", "run the tray icon"))
+    tr = sub.add_parser("tray", help=L("트레이 아이콘 실행", "run the tray icon"))
+    tr.add_argument("--render-test", help=argparse.SUPPRESS)  # CI smoke test: import pystray + render a PNG
     # internal / legacy (no help= → not listed in --help)
     d = sub.add_parser("daemon")
     d.add_argument("--once", action="store_true")

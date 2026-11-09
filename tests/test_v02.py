@@ -259,3 +259,39 @@ def test_uninstall_all_restores_settings_and_deletes_data(tmp_path):
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data == {"statusLine": {"type": "command", "command": "mine"}}, msgs
     assert not home.exists()
+
+
+# --- tray (pure parts) ---------------------------------------------------------------------------
+
+def test_tray_tooltip_and_colors(monkeypatch):
+    from tokenalarm import tray
+
+    monkeypatch.setenv("TOKENALARM_LANG", "en")
+    st = {"week": {"pct": 29.4, "projected": 47.0, "seconds_left": 3600 * 30}, "five": {"pct": 12},
+          "state": "MONITOR", "wants_fill": True, "target": 50}
+    tip = tray.tooltip(st)
+    assert "wk 29%" in tip and "~47%" in tip and "pending 50%" in tip and len(tip) <= tray.TOOLTIP_MAX
+    assert len(tray.tooltip({"week": {"pct": 1, "projected": 2}, "decision": "x" * 500})) <= tray.TOOLTIP_MAX
+    assert tray.color_for(None) == tray.GRAY and tray.color_for(10) == tray.GREEN
+    assert tray.color_for(70) == tray.YELLOW and tray.color_for(90) == tray.RED
+    assert "paused" in tray.tooltip(st, paused=True)
+
+
+def test_tray_icon_render():
+    pytest.importorskip("PIL")
+    from tokenalarm import tray
+
+    img = tray.render_icon(42.0, filling=True)
+    assert img.size == (64, 64)
+    assert img.getpixel((10, 32))[:3] == tray.GREEN[:3] or img.getpixel((8, 32))[3] > 0
+    assert tray.render_icon(None).getpixel((32, 6))[:3] == tray.GRAY[:3]
+
+
+def test_stop_file_interrupts_fill(store, tmp_path):
+    from tokenalarm.config import Config
+    from tokenalarm.fill import FillController, LiveUsage
+
+    fc = FillController(Config(), store, None, None, [], None)
+    paths.stop_file().write_text("x")
+    r = fc.stop_reason(30, LiveUsage(None), time.time(), None)
+    assert getattr(r, "code", None) == "stop_request"

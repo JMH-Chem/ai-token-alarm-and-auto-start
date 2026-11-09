@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   pytest:
     strategy:
@@ -19,9 +22,100 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install
         run: python -m pip install -e ".[dev]"
-      - name: Configure git identity (worktree test)
+      - name: Configure git identity (worktree tests)
         run: |
           git config --global user.email "ci@example.com"
           git config --global user.name "ci"
+      - name: Lint
+        run: python -m ruff check src tests
       - name: Test
         run: python -m pytest -v
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+
+  # End-to-end on real Windows PowerShell 5.1: one-line installer, setup, hooks through three shells,
+  # tray smoke test, upgrade (re-run) and uninstall. Uses a data folder with a space and Korean characters.
+  windows-install-smoke:
+    runs-on: windows-latest
+    env:
+      TOKENALARM_HOME: ${{ runner.temp }}\ta home 한글
+      CLAUDE_CONFIG_DIR: ${{ runner.temp }}\claude config
+      TOKENALARM_LANG: en
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install with install.ps1 (local source)
+        shell: powershell
+        env:
+          TOKENALARM_SOURCE: .
+          TOKENALARM_NO_SETUP: "1"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+      - name: Setup, doctor and autostart dry-run
+        shell: powershell
+        run: |
+          $ta = Join-Path (& "$HOME\.local\bin\uv.exe" tool dir --bin).Trim() 'tokenalarm.exe'
+          & $ta --version
+          if ($LASTEXITCODE) { throw 'version failed' }
+          & $ta setup --yes --autostart none --no-test-notify --ntfy none
+          if ($LASTEXITCODE) { throw 'setup failed' }
+          & $ta add research "Summarize this week's AI news" --repeat weekly
+          if ($LASTEXITCODE) { throw 'add failed' }
+          & $ta tasks
+          & $ta doctor --no-claude
+          & $ta doctor --json --no-claude | Out-File doctor.json -Encoding utf8
+          $xml = (& $ta autostart --dry-run) -join "`n"
+          if ($xml -notmatch 'PT0S' -or $xml -notmatch 'tokenalarmw') { throw "task xml unexpected: $xml" }
+      - name: Registered hook and status line run under bash, cmd and PowerShell
+        shell: powershell
+        run: |
+          $s = Get-Content "$env:CLAUDE_CONFIG_DIR\settings.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+          $h = $s.hooks.Stop[0].hooks[0]
+          Write-Host "hook: $($h.command) $($h.args)"
+          '{"session_id":"ci","hook_event_name":"Stop"}' | & $h.command $h.args
+          if ($LASTEXITCODE) { throw 'hook failed' }
+          $sl = $s.statusLine.command
+          Write-Host "statusline: $sl"
+          $payload = '{"session_id":"ci","cost":{"total_cost_usd":0.1},"rate_limits":{"seven_day":{"used_percentage":12,"resets_at":2000000000}}}'
+          $o1 = $payload | cmd /c $sl
+          $o2 = $payload | & "C:\Program Files\Git\bin\bash.exe" -c "$sl"
+          $o3 = $payload | powershell -NoProfile -Command "$sl"
+          foreach ($o in @($o1, $o2, $o3)) { Write-Host "-> $o"; if ("$o" -notmatch '12%') { throw "status line output wrong: $o" } }
+          if (-not (Get-Content "$env:TOKENALARM_HOME\spool\events.jsonl" -Raw)) { throw 'nothing spooled' }
+      - name: Tray extra smoke test
+        shell: powershell
+        run: |
+          $ta = Join-Path (& "$HOME\.local\bin\uv.exe" tool dir --bin).Trim() 'tokenalarm.exe'
+          & $ta tray --render-test "$env:RUNNER_TEMP\icon.png"
+          if ($LASTEXITCODE -or -not (Test-Path "$env:RUNNER_TEMP\icon.png")) { throw 'tray render failed' }
+      - name: Upgrade by re-running the installer
+        shell: powershell
+        env:
+          TOKENALARM_SOURCE: .
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+      - name: Uninstall
+        shell: powershell
+        env:
+          TOKENALARM_UNINSTALL: "1"
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+          $raw = Get-Content "$env:CLAUDE_CONFIG_DIR\settings.json" -Raw -Encoding UTF8
+          if ($raw -match 'tokenalarm') { throw "settings.json still mentions tokenalarm: $raw" }
+          $bin = (& "$HOME\.local\bin\uv.exe" tool dir --bin).Trim()
+          if (Test-Path (Join-Path $bin 'tokenalarm.exe')) { throw 'tokenalarm.exe still installed' }
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-diagnostics
+          path: |
+            doctor.json
+            ${{ runner.temp }}\ta home 한글\logs\
+          if-no-files-found: ignore

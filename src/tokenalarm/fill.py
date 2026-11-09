@@ -100,6 +100,8 @@ class FillController:
                 ingest_spool(self.store)
             except Exception as e:  # pragma: no cover
                 log.warning("spool ingest failed: %s", e)
+        if paths.stop_file().exists():
+            return Reason("stop_request", L("종료 요청 (tokenalarm stop)", "stop requested (tokenalarm stop)"))
         if paths.pause_file().exists():
             return Reason("pause", L("일시정지 (PAUSE 파일)", "paused (PAUSE file)"))
         pause_until = self.store.get("pause_until")
