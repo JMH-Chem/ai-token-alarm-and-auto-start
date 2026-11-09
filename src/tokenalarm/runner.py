@@ -22,8 +22,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import paths
-from .claude_cli import autorun_env, interrupt_message, kill_tree, popen_kwargs, user_message
+from .claude_cli import attach_to_job, autorun_env, interrupt_message, kill_tree, popen_kwargs, user_message
 from .config import Config
+from .i18n import L
+from .policy import Reason
 from .store import Store
 from .tasks import Task
 from .usage.base import Snapshot
@@ -100,13 +102,13 @@ class Runner:
             repo = task.repo or ""
             top = _git(repo, "rev-parse", "--show-toplevel")
             if top.returncode != 0:
-                raise WorkdirError(f"git 저장소가 아닙니다: {repo} ({top.stderr.strip()})")
+                raise WorkdirError(L(f"git 저장소가 아닙니다: {repo}", f"not a git repository: {repo}") + f" ({top.stderr.strip()})")
             branch = f"tokenalarm/{task.id}/{stamp}"
             wt = paths.worktrees_dir() / f"{task.id}-{stamp}"
             base = task.base_ref or "HEAD"
             res = _git(repo, "worktree", "add", "-b", branch, str(wt), base)
             if res.returncode != 0:
-                raise WorkdirError(f"worktree 생성 실패: {res.stderr.strip()}")
+                raise WorkdirError(L("worktree 생성 실패: ", "failed to create worktree: ") + res.stderr.strip())
             return str(wt), branch
         base_dir = Path(task.output_dir) if task.output_dir else paths.home() / "outputs"
         wd = base_dir / task.id / stamp
@@ -155,8 +157,9 @@ class Runner:
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     cwd=cwd, env=env, **popen_kwargs())
+            attach_to_job(proc)
         except OSError as e:
-            res.error = f"실행 실패: {e}"
+            res.error = L(f"실행 실패: {e}", f"failed to start: {e}")
             return res
         events: "queue.Queue[bytes | None]" = queue.Queue()
 
@@ -221,8 +224,10 @@ class Runner:
                             res.api_key_source = ev.get("apiKeySource")
                             if res.api_key_source not in allowed_sources:
                                 res.error = "api_key_source"
-                                res.stop_reason = (f"구독이 아닌 인증({res.api_key_source}) 감지 — API 과금 방지를 "
-                                                   "위해 중단")
+                                res.stop_reason = Reason("blocked_auth", L(
+                                    f"구독이 아닌 인증({res.api_key_source}) 감지 — API 과금 방지를 위해 중단",
+                                    f"non-subscription auth ({res.api_key_source}) detected — stopped to avoid API "
+                                    "billing"))
                                 send(interrupt_message(str(uuid.uuid4())))
                                 close_stdin()
                                 kill_tree(proc)
@@ -251,7 +256,8 @@ class Runner:
                 if interrupt_at is None:
                     reason = stop_fn()
                     if reason is None and time.monotonic() - started > timeout:
-                        reason = f"청크 시간 초과 ({int(timeout // 60)}분)"
+                        m = int(timeout // 60)
+                        reason = Reason("timeout", L(f"청크 시간 초과 ({m}분)", f"chunk timed out ({m} min)"))
                     if reason:
                         res.interrupted = True
                         res.stop_reason = reason
@@ -270,7 +276,8 @@ class Runner:
             kill_tree(proc)
             res.exit_code = proc.poll()
         if not got_result and not res.error and not res.interrupted:
-            res.error = f"result 없이 종료 (exit {res.exit_code}) — {stderr_path}"
+            res.error = L(f"result 없이 종료 (exit {res.exit_code}) — {stderr_path}",
+                          f"exited without a result (exit {res.exit_code}) — {stderr_path}")
         return res
 
     # --- a whole task --------------------------------------------------------------------------
@@ -303,7 +310,7 @@ class Runner:
         session = state.get("session_id") if resuming else None
         env = autorun_env(task.env)
         max_chunks = int(task.max_chunks or self.cfg.runner.max_chunks_per_task)
-        status, reason = "partial", "최대 청크 수 도달"
+        status, reason = "partial", L("최대 청크 수 도달", "max chunks reached")
         for i in range(1, max_chunks + 1):
             pre = stop_fn()
             if pre:
@@ -331,11 +338,11 @@ class Runner:
                 status, reason = "partial", res.stop_reason
                 break
             if res.subtype == "success" and not res.is_error:
-                status, reason = "done", "작업 완료"
+                status, reason = "done", L("작업 완료", "task complete")
                 break
             if res.subtype in ("error_max_turns", "error_max_budget_usd"):
                 continue  # chunk boundary — re-check usage and continue
-            status, reason = "failed", res.error or res.subtype or "알 수 없는 오류"
+            status, reason = "failed", res.error or res.subtype or L("알 수 없는 오류", "unknown error")
             break
         outcome.status, outcome.reason, outcome.session_id = status, reason, session
         outcome.pct_end = pct_fn() if pct_fn else None

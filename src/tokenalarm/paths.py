@@ -73,6 +73,15 @@ def lock_file() -> Path:
     return home() / "daemon.lock"
 
 
+def pid_file() -> Path:
+    return home() / "daemon.pid"
+
+
+def stop_file() -> Path:
+    """``tokenalarm stop`` creates this; the daemon/tray exits within a few seconds and deletes it."""
+    return home() / "STOP"
+
+
 def claude_home() -> Path:
     env = os.environ.get("CLAUDE_CONFIG_DIR")
     return Path(env).expanduser() if env else Path.home() / ".claude"

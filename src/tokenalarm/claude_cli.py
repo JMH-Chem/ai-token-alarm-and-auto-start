@@ -32,7 +32,10 @@ def resolve_claude_cmd(configured: list[str] | None = None) -> list[str]:
     for c in candidates:
         if c and Path(c).exists():
             return [c]
-    raise ClaudeNotFound("`claude` CLI를 찾을 수 없습니다. Claude Code를 설치하거나 config의 runner.claude_cmd를 지정하세요.")
+    from .i18n import L
+
+    raise ClaudeNotFound(L("`claude` CLI를 찾을 수 없습니다. Claude Code를 설치하거나 config의 runner.claude_cmd를 지정하세요.",
+                           "`claude` CLI not found. Install Claude Code or set runner.claude_cmd in config."))
 
 
 def autorun_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -54,6 +57,72 @@ def popen_kwargs() -> dict[str, Any]:
     else:
         kw["start_new_session"] = True
     return kw
+
+
+_job_handle: int | None = None  # 0 = unavailable
+
+
+def _windows_job() -> int | None:
+    """A Job Object with KILL_ON_JOB_CLOSE: if tokenalarm dies, its claude children die with it."""
+    global _job_handle
+    if _job_handle is not None:
+        return _job_handle or None
+    _job_handle = 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_ulonglong) for n in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class BASIC(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class EXTENDED(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BASIC), ("IoInfo", IO_COUNTERS),
+                        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        handle = k32.CreateJobObjectW(None, None)
+        if not handle:
+            return None
+        info = EXTENDED()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            return None
+        _job_handle = int(handle)
+        return _job_handle
+    except Exception:
+        return None
+
+
+def attach_to_job(proc: subprocess.Popen) -> bool:
+    if sys.platform != "win32":
+        return False  # POSIX: start_new_session + killpg already handle the tree
+    job = _windows_job()
+    handle = getattr(proc, "_handle", None)
+    if not job or handle is None:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        return bool(k32.AssignProcessToJobObject(job, int(handle)))
+    except Exception:
+        return False
 
 
 def user_message(text: str) -> str:
@@ -95,6 +164,7 @@ def run_stream(cmd: list[str], stdin_text: str | None, env: dict[str, str], time
     """Run a short headless command and return its parsed stream-json events."""
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             cwd=cwd, env=env, **popen_kwargs())
+    attach_to_job(proc)
     events: list[dict[str, Any]] = []
 
     def reader() -> None:

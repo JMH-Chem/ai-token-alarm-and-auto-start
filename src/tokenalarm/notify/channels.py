@@ -7,11 +7,18 @@ import shutil
 import subprocess
 import sys
 import urllib.request
+from typing import Callable
 
 from ..config import NtfyConfig, WebhookConfig
 
 log = logging.getLogger(__name__)
 APP_NAME = "TokenAlarm"
+AUMID = "TokenAlarm"  # registered under HKCU by `tokenalarm setup` so Windows does not drop our toasts
+POWERSHELL_AUMID = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
+_AUMID_KEY = r"Software\Classes\AppUserModelId\TokenAlarm"
+
+# The tray app sets this so toasts come from its own icon (pystray Icon.notify).
+desktop_override: Callable[[str, str], bool] | None = None
 
 
 def _post_json(url: str, payload: dict, headers: dict | None = None, timeout: float = 10) -> bool:
@@ -45,37 +52,87 @@ def webhook(cfg: WebhookConfig, title: str, body: str) -> bool:
     return _post_json(cfg.url, payload)
 
 
+# --- Windows toast ---------------------------------------------------------------------------------
+
+def register_aumid() -> bool:
+    """Register the "TokenAlarm" sender (HKCU, no admin) so toasts show our name and are not dropped."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _AUMID_KEY) as k:
+            winreg.SetValueEx(k, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
+            winreg.SetValueEx(k, "ShowInSettings", 0, winreg.REG_DWORD, 1)
+        return True
+    except OSError as e:
+        log.warning("AUMID registration failed: %s", e)
+        return False
+
+
+def unregister_aumid() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, _AUMID_KEY)
+    except OSError:
+        pass
+
+
+def aumid_registered() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUMID_KEY):
+            return True
+    except OSError:
+        return False
+
+
 _PS_TOAST = r"""
 $ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false  # Korean text arrives as UTF-8, not CP949
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-$t = [Console]::In.ReadLine(); $b = [Console]::In.ReadToEnd()
+$app = [Console]::In.ReadLine(); $t = [Console]::In.ReadLine(); $b = [Console]::In.ReadToEnd()
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-$doc = '<toast><visual><binding template="ToastGeneric"><text></text><text></text></binding></visual></toast>'
-$xml.LoadXml($doc)
+$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text></text><text></text></binding></visual></toast>')
 $nodes = $xml.GetElementsByTagName('text')
 $nodes.Item(0).AppendChild($xml.CreateTextNode($t)) | Out-Null
 $nodes.Item(1).AppendChild($xml.CreateTextNode($b)) | Out-Null
-$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show(
   [Windows.UI.Notifications.ToastNotification]::new($xml))
 """
 
 
-def desktop(title: str, body: str) -> bool:
+def _windows_app_id(mode: str) -> str:
+    if mode == "powershell":
+        return POWERSHELL_AUMID
+    if mode == "tokenalarm":
+        return AUMID
+    return AUMID if aumid_registered() else POWERSHELL_AUMID
+
+
+def desktop(title: str, body: str, app_id_mode: str = "auto") -> bool:
+    if desktop_override is not None:
+        try:
+            if desktop_override(title, body):
+                return True
+        except Exception as e:  # fall back to the normal path
+            log.warning("tray notification failed: %s", e)
     try:
         if sys.platform == "win32":
-            try:
-                from win11toast import notify as win_notify  # optional extra [windows]
-
-                win_notify(title, body, app_id=APP_NAME)
-                return True
-            except Exception:
-                pass
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            payload = "\n".join([_windows_app_id(app_id_mode), title.replace("\n", " "), body])
             res = subprocess.run(
                 ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", _PS_TOAST],
-                input=(title + "\n" + body).encode("utf-8"), capture_output=True, timeout=30, creationflags=flags)
+                input=payload.encode("utf-8"), capture_output=True, timeout=30, creationflags=flags)
+            if res.returncode != 0:
+                log.warning("toast failed: %s", res.stderr.decode("utf-8", "replace")[-300:])
             return res.returncode == 0
         if sys.platform == "darwin":
             script = f"display notification {json.dumps(body)} with title {json.dumps(title)}"

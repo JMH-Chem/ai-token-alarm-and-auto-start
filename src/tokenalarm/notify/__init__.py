@@ -31,7 +31,7 @@ class Notifier:
             return True
         ok = False
         if self.cfg.desktop:
-            ok |= channels.desktop(title, body)
+            ok |= channels.desktop(title, body, self.cfg.desktop_app_id)
         if self.cfg.ntfy.topic:
             ok |= channels.ntfy(self.cfg.ntfy, title, body, priority)
         for hook in self.cfg.webhooks:

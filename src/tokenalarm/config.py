@@ -4,6 +4,7 @@ Durations accept numbers (seconds) or strings like ``"90s"``, ``"45m"``, ``"72h"
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,15 +61,26 @@ class FillRule:
     fill_to: float  # percent
 
     def label(self) -> str:
-        return f"리셋 {format_duration(self.before_reset)} 전 <{self.if_below:g}% → {self.fill_to:g}%"
+        from .i18n import L
+
+        d = format_duration(self.before_reset)
+        return L(f"리셋 {d} 전 <{self.if_below:g}% → {self.fill_to:g}%",
+                 f"{d} before reset & <{self.if_below:g}% → {self.fill_to:g}%")
 
 
-DEFAULT_RULES = [
-    FillRule(72 * 3600, 20, 30),
-    FillRule(48 * 3600, 40, 50),
-    FillRule(24 * 3600, 60, 70),
-    FillRule(12 * 3600, 80, 90),
-]
+H = 3600
+PRESETS: dict[str, list[FillRule]] = {
+    # 3 days / 2 days / 1 day / 12 hours before the weekly reset
+    "standard": [FillRule(72 * H, 20, 30), FillRule(48 * H, 40, 50), FillRule(24 * H, 60, 70),
+                 FillRule(12 * H, 80, 90)],
+    # fill a little, late
+    "conservative": [FillRule(48 * H, 30, 40), FillRule(24 * H, 50, 60), FillRule(12 * H, 70, 80)],
+    # use almost everything before the reset
+    "aggressive": [FillRule(72 * H, 30, 45), FillRule(48 * H, 50, 65), FillRule(24 * H, 70, 85),
+                   FillRule(12 * H, 85, 93)],
+}
+DEFAULT_RULES = PRESETS["standard"]
+CONFIG_VERSION = 2
 
 
 @dataclass
@@ -112,7 +124,8 @@ class RunnerConfig:
     kill_grace_seconds: float = 20.0
     allowed_api_key_sources: list[str] = field(default_factory=lambda: ["none"])
     continue_prompt: str = (
-        "이전 작업을 이어서 계속 진행하세요. 단계마다 커밋/저장하고, 모두 끝났으면 무엇을 했는지 요약하세요."
+        "Continue the previous task from where you stopped. Keep committing/saving after each step, and when "
+        "everything is done, summarize what you did (in the same language as the original task)."
     )
     append_system_prompt: str = (
         "You are running unattended as a scheduled background job (tokenalarm). The user is away. "
@@ -138,6 +151,7 @@ class WebhookConfig:
 @dataclass
 class NotifyConfig:
     desktop: bool = True
+    desktop_app_id: str = "auto"  # auto | tokenalarm | powershell  (Windows toast sender identity)
     ntfy: NtfyConfig = field(default_factory=NtfyConfig)
     webhooks: list[WebhookConfig] = field(default_factory=list)
     daily_summary_hour: int | None = 21  # local hour, None = off
@@ -153,6 +167,9 @@ class DaemonConfig:
 
 @dataclass
 class Config:
+    config_version: int = CONFIG_VERSION
+    language: str = "auto"  # auto | ko | en
+    preset: str = "standard"
     weekly_fill_rules: list[FillRule] = field(default_factory=lambda: list(DEFAULT_RULES))
     guards: Guards = field(default_factory=Guards)
     usage: UsageConfig = field(default_factory=UsageConfig)
@@ -166,10 +183,31 @@ class Config:
 _GUARD_DURATIONS = {"session_heartbeat_timeout", "pre_run_warning"}
 
 
+class ConfigError(ValueError):
+    pass
+
+
+_SECTION = {"Guards": "guards", "UsageConfig": "usage", "RunnerConfig": "runner", "NotifyConfig": "notify",
+            "NtfyConfig": "notify.ntfy", "DaemonConfig": "daemon"}
+TOP_KEYS = {"config_version", "language", "preset", "weekly_fill_rules", "guards", "usage", "runner", "notify",
+            "daemon", "tasks_file"}
+
+
+def _unknown(section: str, key: str, known: list[str]) -> ConfigError:
+    from .i18n import L
+
+    close = difflib.get_close_matches(key, known, n=1)
+    hint = L(f" — 혹시 '{close[0]}'?", f" — did you mean '{close[0]}'?") if close else ""
+    where = f"{section}.{key}" if section else key
+    return ConfigError(L(f"알 수 없는 설정 키: {where}{hint}", f"unknown config key: {where}{hint}"))
+
+
 def _apply(obj: Any, data: dict[str, Any], durations: set[str] = frozenset()) -> None:
+    if not isinstance(data, dict):
+        raise ConfigError(f"{_SECTION.get(type(obj).__name__, type(obj).__name__)}: expected a mapping")
     for key, value in (data or {}).items():
-        if not hasattr(obj, key):
-            raise ValueError(f"unknown config key: {type(obj).__name__}.{key}")
+        if not hasattr(obj, key) or key.startswith("_"):
+            raise _unknown(_SECTION.get(type(obj).__name__, ""), key, list(vars(obj).keys()))
         if key in durations and value is not None:
             value = parse_duration(value)
         setattr(obj, key, value)
@@ -179,10 +217,24 @@ def load_config(path: Path | None) -> Config:
     cfg = Config()
     if path is None or not Path(path).exists():
         return cfg
-    with open(path, encoding="utf-8-sig") as f:
-        raw = yaml.safe_load(f) or {}
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            raw = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path}: {e}") from e
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{path}: top level must be a mapping")
+    for key in raw:
+        if key not in TOP_KEYS:
+            raise _unknown("", key, sorted(TOP_KEYS))
     cfg.source_path = Path(path)
-    if "weekly_fill_rules" in raw:
+    cfg.config_version = int(raw.get("config_version") or 1)
+    cfg.language = str(raw.get("language") or "auto")
+    cfg.preset = str(raw.get("preset") or "standard")
+    if cfg.preset not in PRESETS:
+        raise ConfigError(f"preset must be one of {', '.join(PRESETS)}")
+    cfg.weekly_fill_rules = list(PRESETS[cfg.preset])
+    if raw.get("weekly_fill_rules"):
         rules = []
         for item in raw.get("weekly_fill_rules") or []:
             rules.append(
@@ -215,10 +267,60 @@ def load_config(path: Path | None) -> Config:
 def validate_config(cfg: Config) -> None:
     for r in cfg.weekly_fill_rules:
         if not (0 <= r.if_below <= 100 and 0 < r.fill_to <= 100):
-            raise ValueError(f"rule percentages must be 0-100: {r}")
+            raise ConfigError(f"rule percentages must be 0-100: {r}")
         if r.fill_to < r.if_below:
-            raise ValueError(f"fill_to must be >= if_below: {r}")
+            raise ConfigError(f"fill_to must be >= if_below: {r}")
         if r.before_reset <= 0:
-            raise ValueError(f"before_reset must be positive: {r}")
+            raise ConfigError(f"before_reset must be positive: {r}")
     if cfg.usage.rate_limit_scale not in ("auto", "fraction", "percent"):
-        raise ValueError("usage.rate_limit_scale must be auto, fraction or percent")
+        raise ConfigError("usage.rate_limit_scale must be auto, fraction or percent")
+    if cfg.language not in ("auto", "ko", "en"):
+        raise ConfigError("language must be auto, ko or en")
+    if cfg.notify.desktop_app_id not in ("auto", "tokenalarm", "powershell"):
+        raise ConfigError("notify.desktop_app_id must be auto, tokenalarm or powershell")
+
+
+def _yaml_scalar(v: Any) -> str:
+    import json
+
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)  # JSON strings are valid YAML and always quoted
+    return str(v)
+
+
+def minimal_config_text(language: str, preset: str, desktop: bool = True, ntfy_topic: str | None = None,
+                        webhooks: list[dict] | None = None, quiet_hours: str | None = None) -> str:
+    """The short config.yaml written by ``tokenalarm setup`` (comments in the chosen language)."""
+    ko = language == "ko"
+    lines = [
+        "# TokenAlarm — " + ("설정 파일. 바꾸면 데몬이 자동으로 다시 읽습니다." if ko else
+                             "settings. The daemon reloads this file automatically when it changes."),
+        "# " + ("전체 옵션: config.example.yaml (tokenalarm open data)" if ko else
+                "All options: config.example.yaml (tokenalarm open data)"),
+        f"config_version: {CONFIG_VERSION}",
+        f"language: {language}            # auto | ko | en",
+        f"preset: {preset}          # standard | conservative | aggressive",
+        "# " + ("standard = 리셋 3일 전 <20%→30%, 2일 전 <40%→50%, 1일 전 <60%→70%, 12시간 전 <80%→90%" if ko else
+                "standard = 3d before reset <20%→30%, 2d <40%→50%, 1d <60%→70%, 12h <80%→90%"),
+        "# " + ("직접 정하려면 weekly_fill_rules 를 추가하세요 (config.example.yaml 참고)" if ko else
+                "For custom rules add weekly_fill_rules (see config.example.yaml)"),
+        "guards:",
+        f"  quiet_hours: {_yaml_scalar(quiet_hours)}     # " + ("예: \"09:00-18:00\" 에는 자동 실행 시작 안 함" if ko
+                                                       else 'e.g. "09:00-18:00" → never start autorun then'),
+        "notify:",
+        f"  desktop: {_yaml_scalar(desktop)}",
+        "  ntfy:",
+        f"    topic: {_yaml_scalar(ntfy_topic)}" + ("   # https://ntfy.sh/<topic> 을 휴대폰 ntfy 앱에서 구독" if ko else
+                                              "   # subscribe to https://ntfy.sh/<topic> in the ntfy phone app"),
+    ]
+    if webhooks:
+        lines.append("  webhooks:")
+        for h in webhooks:
+            lines.append(f"    - {{type: {h['type']}, url: {_yaml_scalar(h['url'])}}}")
+    else:
+        lines.append("  webhooks: []      # - {type: slack|discord, url: https://...}")
+    return "\n".join(lines) + "\n"

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import paths, spool
 from .config import format_duration
+from .i18n import L
 from .usage.parse import parse_statusline
 
 HOOK_EVENTS = {
@@ -71,18 +72,18 @@ def render_statusline(payload: dict, state: dict | None, now: float) -> str:
         if five:
             parts.append(f"5h {_color(five.pct)}{five.pct:.0f}%{RESET} ({format_duration(five.seconds_left(now))})")
         if week:
-            text = f"주 {_color(week.pct)}{week.pct:.0f}%{RESET} ({format_duration(week.seconds_left(now))})"
+            text = f"{L('주', 'wk')} {_color(week.pct)}{week.pct:.0f}%{RESET} ({format_duration(week.seconds_left(now))})"
             proj = (state or {}).get("week", {}).get("projected")
             if proj is not None:
-                text += f" → 예상 {proj:.0f}%"
+                text += L(f" → 예상 {proj:.0f}%", f" → proj. {proj:.0f}%")
             parts.append(text)
     else:
-        parts.append("사용량: 첫 응답 후 표시")
+        parts.append(L("사용량: 첫 응답 후 표시", "usage: shown after first reply"))
     if state:
         if state.get("state") == "FILLING":
-            parts.append("⚡자동실행 중")
+            parts.append(L("⚡자동실행 중", "⚡autorun"))
         elif state.get("target") is not None and state.get("wants_fill"):
-            parts.append(f"⚡대기: {state['target']:g}%까지")
+            parts.append(L(f"⚡대기: {state['target']:g}%까지", f"⚡pending: to {state['target']:g}%"))
     return " │ ".join(parts)
 
 
@@ -104,6 +105,10 @@ def statusline_main() -> int:
             state = json.loads(sf.read_text(encoding="utf-8"))
     except Exception:
         state = None
+    if state and state.get("lang"):
+        from . import i18n
+
+        i18n.set_lang(state["lang"])  # the daemon knows the configured language; we never parse YAML here
     try:
         sys.stdout.write(render_statusline(payload, state, now))
     except Exception:
@@ -112,6 +117,8 @@ def statusline_main() -> int:
 
 
 def _spool_statusline(payload: dict, now: float) -> None:
+    if not payload.get("session_id"):
+        return  # not called by Claude Code (e.g. `tokenalarm doctor` test run)
     rl = payload.get("rate_limits")
     cost = payload.get("cost") or {}
     activity_key = [payload.get("session_id"), cost.get("total_cost_usd"), cost.get("total_api_duration_ms")]
@@ -132,3 +139,22 @@ def _spool_statusline(payload: dict, now: float) -> None:
     tmp = marker.with_suffix(".tmp")
     tmp.write_text(json.dumps({"key": data_key, "ts": now, "activity": activity_key}), encoding="utf-8")
     os.replace(tmp, marker)
+
+
+# --- console-script entry points (see pyproject [project.scripts]) --------------------------------
+
+def hook_entry() -> int:
+    """``tokenalarm-hook <Event>``: always exits 0 and prints nothing, even when called without args."""
+    try:
+        if len(sys.argv) < 2:
+            return 0
+        return hook_main(sys.argv[1])
+    except Exception:
+        return 0
+
+
+def statusline_entry() -> int:
+    try:
+        return statusline_main()
+    except Exception:
+        return 0

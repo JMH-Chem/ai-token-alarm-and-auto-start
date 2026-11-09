@@ -15,7 +15,8 @@ from .config import Config, format_duration
 from .forecast import calibrate_pct_per_usd
 from .ingest import ingest_spool
 from .notify import Notifier
-from .policy import run_guard
+from .i18n import L
+from .policy import Reason, run_guard
 from .runner import RunOutcome, Runner
 from .store import Store
 from .tasks import Task, select_task
@@ -100,12 +101,12 @@ class FillController:
             except Exception as e:  # pragma: no cover
                 log.warning("spool ingest failed: %s", e)
         if paths.pause_file().exists():
-            return "일시정지 (PAUSE 파일)"
+            return Reason("pause", L("일시정지 (PAUSE 파일)", "paused (PAUSE file)"))
         pause_until = self.store.get("pause_until")
         if pause_until and self.now() < float(pause_until):
-            return "일시정지 중"
+            return Reason("pause", L("일시정지 중", "paused"))
         if deadline and self.now() >= deadline:
-            return "시간 제한 도달"
+            return Reason("deadline", L("시간 제한 도달", "time limit reached"))
         snap = live.snapshot()
         week = snap.windows.get(SEVEN_DAY)
         if week is not None:
@@ -119,7 +120,8 @@ class FillController:
         return None
 
     def fill(self, target: float, only_task: str | None = None, dry_run: bool = False,
-             max_seconds: float | None = None, label: str = "수동") -> FillReport:
+             max_seconds: float | None = None, label: str | None = None) -> FillReport:
+        label = label or L("수동", "manual")
         now = self.now()
         snap = self.usage.current(now)
         if snap is None or snap.get(SEVEN_DAY) is None or not self.usage.is_fresh(now):
@@ -128,7 +130,8 @@ class FillController:
         live = LiveUsage(snap)
         report = FillReport(target, live.week_pct(None))
         if live.week_pct(None) is None:
-            report.stop_reason = "주간 사용량을 읽을 수 없음 (statusline 설정 또는 probe 확인 필요)"
+            report.stop_reason = Reason("no_data", L("주간 사용량을 읽을 수 없음 (tokenalarm doctor 로 확인)",
+                                                    "cannot read weekly usage (run tokenalarm doctor)"))
             return report
         deadline = now + max_seconds if max_seconds else None
 
@@ -147,15 +150,18 @@ class FillController:
                 break
             task = select_task(self.tasks, self.store, self.now(), week_start, exclude=tried, only=only_task)
             if task is None:
-                report.stop_reason = "실행할 작업이 없음 (작업 큐 소진)"
+                report.stop_reason = Reason("queue_empty", L("실행할 작업이 없음 (작업 큐 소진)", "nothing to run (task queue empty)"))
                 break
             tried.add(task.id)
             if dry_run:
-                report.stop_reason = f"[dry-run] 다음 작업: {task.id} (예산 ${self.chunk_budget(target, live):.2f}/청크)"
+                b = self.chunk_budget(target, live)
+                report.stop_reason = Reason("dry_run", L(f"[dry-run] 다음 작업: {task.id} (예산 ${b:.2f}/청크)",
+                                                         f"[dry-run] next task: {task.id} (budget ${b:.2f}/chunk)"))
                 break
             pct_now = live.week_pct(self.pct_per_usd())
-            self.notifier.send(f"자동 실행 시작: {task.id}",
-                               f"{label} · 주간 {pct_now:.0f}% → 목표 {target:g}% · {task.kind}")
+            self.notifier.send(L(f"자동 실행 시작: {task.id}", f"Autorun started: {task.id}"),
+                               L(f"{label} · 주간 {pct_now:.0f}% → 목표 {target:g}% · {task.kind}",
+                                 f"{label} · weekly {pct_now:.0f}% → target {target:g}% · {task.kind}"))
             outcome = self.runner.run_task(
                 task,
                 stop_fn=lambda: self.stop_reason(target, live, started_at, deadline),
@@ -175,12 +181,14 @@ class FillController:
                 if outcome.run_id is not None:
                     self.store.update_run(outcome.run_id, pct_end=outcome.pct_end)
             self._recalibrate()
-            self.notifier.send(f"자동 실행 {self._status_ko(outcome.status)}: {task.id}", self._describe(outcome))
+            self.notifier.send(L(f"자동 실행 {self._status_text(outcome.status)}: {task.id}",
+                                 f"Autorun {self._status_text(outcome.status)}: {task.id}"), self._describe(outcome))
             if outcome.status == "blocked":
                 report.stop_reason = outcome.reason
                 break
             if only_task and outcome.status in ("done", "failed"):
-                report.stop_reason = f"지정 작업 {self._status_ko(outcome.status)}"
+                report.stop_reason = Reason("task_" + outcome.status, L(f"지정 작업 {self._status_text(outcome.status)}",
+                                                                     f"selected task {self._status_text(outcome.status)}"))
                 break
         report.pct_end = live.week_pct(None)
         return report
@@ -191,33 +199,38 @@ class FillController:
             self.store.set("pct_per_usd", v)
 
     @staticmethod
-    def _status_ko(status: str) -> str:
-        return {"done": "완료", "partial": "중단(이어하기 가능)", "failed": "실패", "blocked": "차단"}.get(status, status)
+    def _status_text(status: str) -> str:
+        ko = {"done": "완료", "partial": "중단(이어하기 가능)", "failed": "실패", "blocked": "차단"}
+        en = {"done": "done", "partial": "paused (will resume)", "failed": "failed", "blocked": "blocked"}
+        return L(ko.get(status, status), en.get(status, status))
 
     @staticmethod
     def _describe(o: RunOutcome) -> str:
         lines = []
         if o.pct_start is not None and o.pct_end is not None:
-            lines.append(f"주간 {o.pct_start:.0f}% → {o.pct_end:.0f}% (+{o.pct_end - o.pct_start:.1f}%)")
-        lines.append(f"비용(추정) ${o.cost:.2f} · {o.turns}턴 · {o.chunks}청크")
+            d = o.pct_end - o.pct_start
+            lines.append(L(f"주간 {o.pct_start:.0f}% → {o.pct_end:.0f}% (+{d:.1f}%)",
+                           f"weekly {o.pct_start:.0f}% → {o.pct_end:.0f}% (+{d:.1f}%)"))
+        lines.append(L(f"비용(추정) ${o.cost:.2f} · {o.turns}턴 · {o.chunks}청크",
+                       f"est. cost ${o.cost:.2f} · {o.turns} turns · {o.chunks} chunks"))
         if o.reason:
-            lines.append(f"사유: {o.reason}")
+            lines.append(L(f"사유: {o.reason}", f"reason: {o.reason}"))
         if o.branch:
-            lines.append(f"브랜치: {o.branch}")
+            lines.append(L(f"브랜치: {o.branch}", f"branch: {o.branch}"))
         if o.workdir:
-            lines.append(f"위치: {o.workdir}")
+            lines.append(L(f"위치: {o.workdir}", f"location: {o.workdir}"))
         return "\n".join(lines)
 
 
 def describe_report(r: FillReport) -> str:
-    parts = [f"목표 {r.target:g}%"]
+    parts = [L(f"목표 {r.target:g}%", f"target {r.target:g}%")]
     if r.pct_start is not None:
-        parts.append(f"시작 {r.pct_start:.0f}%")
+        parts.append(L(f"시작 {r.pct_start:.0f}%", f"start {r.pct_start:.0f}%"))
     if r.pct_end is not None:
-        parts.append(f"종료 {r.pct_end:.0f}%")
-    parts.append(f"작업 {len(r.outcomes)}개, 비용(추정) ${r.cost:.2f}")
+        parts.append(L(f"종료 {r.pct_end:.0f}%", f"end {r.pct_end:.0f}%"))
+    parts.append(L(f"작업 {len(r.outcomes)}개, 비용(추정) ${r.cost:.2f}", f"{len(r.outcomes)} task(s), est. cost ${r.cost:.2f}"))
     if r.stop_reason:
-        parts.append(f"종료 사유: {r.stop_reason}")
+        parts.append(L(f"종료 사유: {r.stop_reason}", f"stopped: {r.stop_reason}"))
     return " · ".join(parts)
 
 

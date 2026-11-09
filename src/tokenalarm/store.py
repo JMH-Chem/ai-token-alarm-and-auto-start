@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS kv (
 """
 
 
+# (version, statements). v1 = the schema above (v0.1 databases had user_version 0 and the same tables).
+MIGRATIONS: list[tuple[int, list[str]]] = [
+    (1, []),
+]
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+
+
 @dataclass
 class RunRow:
     id: int
@@ -99,6 +106,17 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Forward-only schema migrations keyed by ``PRAGMA user_version``."""
+        version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        for target, statements in MIGRATIONS:
+            if version < target:
+                for sql in statements:
+                    self.conn.execute(sql)
+                self.conn.execute(f"PRAGMA user_version = {int(target)}")
+                version = target
 
     def close(self) -> None:
         self.conn.close()
@@ -187,7 +205,8 @@ class Store:
     def prune(self, older_than_days: float = 120) -> None:
         cutoff = time.time() - older_than_days * 86400
         self.conn.execute("DELETE FROM snapshots WHERE observed_at < ?", (cutoff,))
-        self.conn.execute("DELETE FROM activity WHERE ts < ?", (cutoff,))
+        self.conn.execute("DELETE FROM activity WHERE ts < ?", (time.time() - 14 * 86400,))
+        self.conn.execute("DELETE FROM notifications WHERE ts < ?", (time.time() - 30 * 86400,))
 
     # --- activity --------------------------------------------------------------------------------
     def add_activity(self, ts: float, event: str, session_id: str | None, detail: str | None = None) -> None:

@@ -72,7 +72,9 @@ def test_setup_claude_merge_idempotent_and_remove(tmp_path):
     assert data["statusLine"]["command"] == "ccstatusline"  # foreign status line kept
     claude_setup.install(settings, force_statusline=True)
     data = json.loads(settings.read_text(encoding="utf-8"))
-    assert "-m tokenalarm" in data["statusLine"]["command"]
+    assert claude_setup.statusline_is_ours(data["statusLine"])
+    hook = data["hooks"]["Stop"][-1]["hooks"][0]
+    assert hook["args"] == ["Stop"] and "tokenalarm" in hook["command"]  # exec form: no shell involved
     claude_setup.remove(settings)
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["hooks"] == {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}
@@ -98,3 +100,32 @@ def test_task_scheduler_xml():
     assert "<LogonType>InteractiveToken</LogonType>" in xml
     assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in xml
     assert "홍길동" in xml
+
+
+def test_v01_hook_entries_are_replaced_not_duplicated(tmp_path):
+    settings = tmp_path / "settings.json"
+    old = {"hooks": {ev: [{"hooks": [{"type": "command", "command": f'"C:/Py/python.exe" -m tokenalarm hook {ev}'}]}]
+                     for ev in ("UserPromptSubmit", "Stop")},
+           "statusLine": {"type": "command", "command": '"C:/Py/python.exe" -m tokenalarm statusline'}}
+    settings.write_text(json.dumps(old), encoding="utf-8")
+    claude_setup.install(settings)
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    for ev in ("UserPromptSubmit", "Stop"):
+        assert len(data["hooks"][ev]) == 1 and "args" in data["hooks"][ev][0]["hooks"][0]
+    claude_setup.remove(settings)
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert "hooks" not in data and "statusLine" not in data
+
+
+def test_shell_token():
+    assert claude_setup.shell_token("C:\\Users\\me\\bin\\tokenalarm-statusline.exe") == \
+        "C:/Users/me/bin/tokenalarm-statusline.exe"
+    assert claude_setup.shell_token("/home/a b/x").startswith('"')
+
+
+def test_hook_entry_without_args_is_silent(monkeypatch, capsys):
+    from tokenalarm.integrations import hook_entry
+
+    monkeypatch.setattr(sys, "argv", ["tokenalarm-hook"])
+    assert hook_entry() == 0
+    assert capsys.readouterr().out == ""

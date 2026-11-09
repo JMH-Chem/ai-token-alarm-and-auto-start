@@ -12,6 +12,8 @@ import sys
 from dataclasses import dataclass
 
 from .config import Guards
+from .i18n import L
+from .policy import Reason
 from .store import Store
 
 ACTIVE_EVENTS = {"prompt", "stop", "statusline", "session_start"}
@@ -67,11 +69,14 @@ class Activity:
         input_idle = self.input_idle_fn()
         for event, ts in sessions.values():
             if event == "prompt" and now - ts < g.session_heartbeat_timeout:
-                return ActivityState(True, "Claude Code가 응답 생성 중 (대화형 세션)", last_active, input_idle)
+                return ActivityState(True, L("Claude Code가 응답 생성 중 (대화형 세션)",
+                                               "Claude Code is generating a reply (interactive session)"),
+                                     last_active, input_idle)
         if last_active is not None and now - last_active < g.require_idle_minutes * 60:
             mins = int((now - last_active) // 60)
-            return ActivityState(True, f"최근 {mins}분 전 Claude Code 사용", last_active, input_idle)
-        return ActivityState(False, "Claude Code 유휴", last_active, input_idle)
+            return ActivityState(True, L(f"최근 {mins}분 전 Claude Code 사용", f"Claude Code used {mins} min ago"),
+                                 last_active, input_idle)
+        return ActivityState(False, L("Claude Code 유휴", "Claude Code idle"), last_active, input_idle)
 
     def can_start(self, now: float) -> tuple[bool, str]:
         st = self.state(now)
@@ -79,16 +84,17 @@ class Activity:
             return False, st.reason
         need = self.guards.require_input_idle_minutes * 60
         if need > 0 and st.input_idle is not None and st.input_idle < need:
-            return False, f"PC 사용 중 (입력 {int(st.input_idle // 60)}분 전)"
-        return True, "유휴"
+            mins = int(st.input_idle // 60)
+            return False, L(f"PC 사용 중 (입력 {mins}분 전)", f"PC in use (input {mins} min ago)")
+        return True, L("유휴", "idle")
 
     def should_stop(self, now: float, started_at: float) -> str | None:
         """Called while autorun is filling: stop as soon as the user comes back."""
         rows = self.store.activity_since(started_at)
         if any(r["event"] in ("prompt", "session_start") for r in rows):
-            return "사용자가 Claude Code를 다시 사용하기 시작함"
+            return Reason("user_back", L("사용자가 Claude Code를 다시 사용하기 시작함", "you started using Claude Code again"))
         if self.guards.stop_on_input:
             idle = self.input_idle_fn()
             if idle is not None and idle < 60 and now - started_at > 60:
-                return "키보드/마우스 입력 감지"
+                return Reason("input", L("키보드/마우스 입력 감지", "keyboard/mouse input detected"))
         return None

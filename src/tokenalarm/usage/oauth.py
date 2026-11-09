@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
+from ..i18n import L
 from ..paths import claude_home
 from .base import Snapshot
 from .parse import parse_oauth_usage
@@ -28,16 +29,16 @@ class OAuthUnavailable(RuntimeError):
 def _token() -> str:
     path = claude_home() / ".credentials.json"
     if not path.exists():
-        raise OAuthUnavailable(f"{path} 없음 (macOS 키체인 저장 방식은 지원하지 않음)")
+        raise OAuthUnavailable(L(f"{path} 없음 (macOS 키체인 저장 방식은 지원하지 않음)", f"{path} not found (macOS keychain storage is not supported)"))
     with open(path, encoding="utf-8-sig") as f:
         data = json.load(f)
     oauth = data.get("claudeAiOauth") or {}
     token = oauth.get("accessToken")
     if not token:
-        raise OAuthUnavailable("claudeAiOauth.accessToken 없음")
+        raise OAuthUnavailable(L("claudeAiOauth.accessToken 없음", "claudeAiOauth.accessToken missing"))
     expires = oauth.get("expiresAt")
     if isinstance(expires, (int, float)) and expires / 1000 < time.time():
-        raise OAuthUnavailable("토큰 만료됨 — Claude Code를 한 번 실행하면 갱신됩니다")
+        raise OAuthUnavailable(L("토큰 만료됨 — Claude Code를 한 번 실행하면 갱신됩니다", "token expired — run Claude Code once to refresh it"))
     return token
 
 
