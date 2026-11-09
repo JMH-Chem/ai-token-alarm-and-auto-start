@@ -158,7 +158,11 @@ def uninstall() -> list[str]:
     if sys.platform != "win32":
         return [L("systemctl --user disable --now tokenalarm  # 으로 해제하세요",
                   "Run: systemctl --user disable --now tokenalarm")]
+    if not is_installed():
+        return [L("로그온 자동 시작 항목 없음", "no start-at-logon task registered")]
     end_task()
     res = subprocess.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"], capture_output=True, text=True,
                          creationflags=_flags())
+    if res.returncode == 0:
+        return [L(f"로그온 자동 시작 제거 ('{TASK_NAME}')", f"start-at-logon task removed ('{TASK_NAME}')")]
     return [res.stdout.strip() or res.stderr.strip()]
