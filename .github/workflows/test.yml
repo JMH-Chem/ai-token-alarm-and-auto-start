@@ -47,11 +47,14 @@ jobs:
   windows-install-smoke:
     runs-on: windows-latest
     env:
-      TOKENALARM_HOME: ${{ runner.temp }}\ta home 한글
-      CLAUDE_CONFIG_DIR: ${{ runner.temp }}\claude config
       TOKENALARM_LANG: en
     steps:
       - uses: actions/checkout@v4
+      - name: Data folder with a space and Korean characters
+        shell: bash
+        run: |
+          echo "TOKENALARM_HOME=${RUNNER_TEMP}\\ta home 한글" >> "$GITHUB_ENV"
+          echo "CLAUDE_CONFIG_DIR=${RUNNER_TEMP}\\claude config" >> "$GITHUB_ENV"
       - name: Install with install.ps1 (local source)
         shell: powershell
         env:
