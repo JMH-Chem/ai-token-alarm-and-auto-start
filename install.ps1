@@ -14,8 +14,6 @@
     $ErrorActionPreference = 'Stop'
     $repo = 'https://github.com/JMH-Chem/ai-token-alarm-and-auto-start'
     $defaultSource = "$repo/archive/refs/heads/main.zip"
-    $oldPref = $env:UV_PYTHON_PREFERENCE
-    $oldManaged = $env:UV_MANAGED_PYTHON
 
     function Say([string]$m) { Write-Host "[tokenalarm] $m" -ForegroundColor Cyan }
 
@@ -71,10 +69,12 @@
             $spec = "tokenalarm$extras @ $src"
         }
         Say "Installing $spec ..."
-        # a uv-managed Python avoids the Microsoft Store Python (which hides AppData writes)
-        $env:UV_PYTHON_PREFERENCE = 'only-managed'
-        $env:UV_MANAGED_PYTHON = '1'
-        & $uv tool install --force --reinstall --python 3.12 $spec
+        # A uv-managed Python avoids the Microsoft Store Python (which hides AppData writes).
+        # Newer uv spells this --managed-python; older uv only knows --python-preference.
+        $help = (& $uv tool install --help) -join "`n"
+        if ($help -match '--managed-python') { $pyOpt = @('--managed-python') }
+        else { $pyOpt = @('--python-preference', 'only-managed') }
+        & $uv tool install --force --reinstall --python 3.12 @pyOpt $spec
         if ($LASTEXITCODE -ne 0) { throw 'uv tool install failed' }
         & $uv tool update-shell 2>$null | Out-Null
         if (($env:Path -split ';') -notcontains $toolBin) { $env:Path = "$toolBin;$env:Path" }
@@ -92,8 +92,5 @@
         Write-Host "[tokenalarm] ERROR: $_" -ForegroundColor Red
         Write-Host '[tokenalarm] See https://github.com/JMH-Chem/ai-token-alarm-and-auto-start#troubleshooting' -ForegroundColor Red
         if ($env:CI) { throw }  # make CI fail; interactive users keep their window
-    } finally {
-        $env:UV_PYTHON_PREFERENCE = $oldPref
-        $env:UV_MANAGED_PYTHON = $oldManaged
     }
 }

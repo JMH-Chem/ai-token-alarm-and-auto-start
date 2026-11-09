@@ -210,13 +210,24 @@ def run_checks(config_path: Path, tasks_path: Path, check_claude: bool = True) -
 
 # --- output --------------------------------------------------------------------------------------
 
+SAFE_HOSTS = ("code.claude.com", "github.com", "git-scm.com", "docs.astral.sh")
+_URL = re.compile(r"(https?://)([^/\s\"']+)(/[^\s\"']*)?")
+
+
 def redact(text: str, cfg_topic: str | None = None) -> str:
+    """Mask home/user names, webhook paths and the ntfy topic in one *string value* (never in raw JSON)."""
     home = str(Path.home())
     out = text.replace(home, "~").replace(home.replace("\\", "/"), "~")
     user = os.environ.get("USERNAME") or os.environ.get("USER")
     if user and len(user) > 2:
         out = re.sub(re.escape(user), "<user>", out, flags=re.I)
-    out = re.sub(r"(https?://[^/\s]+)/\S+", r"\1/<redacted>", out)
+
+    def mask(m: re.Match) -> str:
+        if m.group(2).lower() in SAFE_HOSTS or not m.group(3):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}/<redacted>"
+
+    out = _URL.sub(mask, out)
     if cfg_topic:
         out = out.replace(cfg_topic, "<ntfy-topic>")
     return out
@@ -244,5 +255,6 @@ def render(checks: list[Check]) -> str:
 
 
 def to_json(checks: list[Check], topic: str | None = None) -> str:
-    data = {"version": __version__, "platform": sys.platform, "checks": [asdict(c) for c in checks]}
-    return redact(json.dumps(data, ensure_ascii=False, indent=2), topic)
+    rows = [{k: redact(v, topic) if isinstance(v, str) else v for k, v in asdict(c).items()} for c in checks]
+    data = {"version": __version__, "platform": sys.platform, "checks": rows}
+    return json.dumps(data, ensure_ascii=False, indent=2)

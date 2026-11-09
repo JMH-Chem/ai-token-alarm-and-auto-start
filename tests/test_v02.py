@@ -295,3 +295,13 @@ def test_stop_file_interrupts_fill(store, tmp_path):
     paths.stop_file().write_text("x")
     r = fc.stop_reason(30, LiveUsage(None), time.time(), None)
     assert getattr(r, "code", None) == "stop_request"
+
+
+def test_redact_keeps_json_valid_and_docs_links():
+    from tokenalarm.doctor import Check, to_json
+
+    checks = [Check("claude", "fail", "Claude Code CLI not found", "x", "https://code.claude.com/docs/en/setup"),
+              Check("n", "ok", "hook", "https://discord.com/api/webhooks/1/TOKEN \"quoted\"", "")]
+    data = json.loads(to_json(checks, "topic-abc"))
+    assert data["checks"][0]["fix"] == "https://code.claude.com/docs/en/setup"
+    assert "TOKEN" not in data["checks"][1]["detail"] and "discord.com/<redacted>" in data["checks"][1]["detail"]
