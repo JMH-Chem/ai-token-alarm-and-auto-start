@@ -11,7 +11,9 @@
 #   TOKENALARM_NO_TRAY   1 = install without the optional tray icon
 #   TOKENALARM_UNINSTALL 1 = remove TokenAlarm (autostart, Claude Code hooks, program; data folder kept)
 & {
-    $ErrorActionPreference = 'Stop'
+    # 'Continue': in Windows PowerShell 5.1, 'Stop' turns any redirected stderr line of a native program
+    # (uv prints progress there) into a terminating error. Failures are detected via $LASTEXITCODE instead.
+    $ErrorActionPreference = 'Continue'
     $repo = 'https://github.com/JMH-Chem/ai-token-alarm-and-auto-start'
     $defaultSource = "$repo/archive/refs/heads/main.zip"
 
@@ -76,7 +78,7 @@
         else { $pyOpt = @('--python-preference', 'only-managed') }
         & $uv tool install --force --reinstall --python 3.12 @pyOpt $spec
         if ($LASTEXITCODE -ne 0) { throw 'uv tool install failed' }
-        & $uv tool update-shell 2>$null | Out-Null
+        & $uv tool update-shell *> $null
         if (($env:Path -split ';') -notcontains $toolBin) { $env:Path = "$toolBin;$env:Path" }
         if (-not (Test-Path $ta)) { throw "tokenalarm.exe not found in $toolBin" }
 
