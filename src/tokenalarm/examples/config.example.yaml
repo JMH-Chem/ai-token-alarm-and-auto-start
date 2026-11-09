@@ -1,0 +1,71 @@
+# TokenAlarm — 전체 옵션 참조 (Full option reference)
+# `tokenalarm setup` 은 짧은 config.yaml 을 만들고, 이 파일은 참고용으로 데이터 폴더에 복사됩니다.
+# 필요한 키만 config.yaml 에 옮겨 쓰세요. 바꾸면 실행 중인 데몬이 자동으로 다시 읽습니다.
+# 기간 표기: 90s, 45m, 72h, 3d, 1d12h  /  퍼센트는 0~100
+
+config_version: 2
+language: auto        # auto(Windows 언어 따라감) | ko | en
+preset: standard      # standard | conservative | aggressive — weekly_fill_rules 를 쓰면 그것이 우선
+
+# ── 리셋 전 "채우기" 사다리 ─────────────────────────────────────────────
+# 주간 리셋까지 남은 시간이 before_reset 이하가 되면 그 규칙이 적용됩니다(가장 늦은 체크포인트 우선).
+# 그 시점 사용률이 if_below 미만이면, fill_to %까지 작업 큐를 실행하고 멈춥니다.
+weekly_fill_rules:
+  - { before_reset: 72h, if_below: 20, fill_to: 30 }   # 3일 전 20% 미만 → 30%까지
+  - { before_reset: 48h, if_below: 40, fill_to: 50 }   # 2일 전 40% 미만 → 50%까지
+  - { before_reset: 24h, if_below: 60, fill_to: 70 }   # 1일 전 60% 미만 → 70%까지
+  - { before_reset: 12h, if_below: 80, fill_to: 90 }   # 12시간 전 80% 미만 → 90%까지
+
+guards:
+  weekly_hard_cap: 95          # 어떤 경우에도 주간 사용률이 이 이상이 되도록 자동 실행하지 않음
+  five_hour_ceiling: 85        # 5시간 창이 이 이상이면 5시간 리셋까지 대기 (내가 바로 쓸 몫 보호)
+  stop_margin: 2               # 목표 - 2% 에서 멈춤 (측정 지연 보정)
+  require_idle_minutes: 30     # 대화형 Claude Code 사용이 이 시간 동안 없어야 시작
+  require_input_idle_minutes: 15   # (Windows) 키보드/마우스 입력이 이 시간 동안 없어야 시작, 0 = 무시
+  stop_on_input: false         # true 면 실행 중 키보드/마우스 입력만 있어도 중단
+  session_heartbeat_timeout: 45m
+  quiet_hours: null            # 예: "09:00-18:00" → 이 시간대에는 자동 실행 시작 안 함
+  pre_run_warning: 10m         # "곧 자동 실행" 알림 후 이만큼 기다렸다 시작 (그 사이 `tokenalarm pause` 로 취소)
+
+usage:
+  statusline_fresh_minutes: 10 # 상태줄 데이터가 이보다 최신이면 따로 조회하지 않음
+  idle_poll_minutes: 60
+  near_checkpoint_poll_minutes: 10
+  probe_usage_command: true    # `claude -p /usage` (모델 호출 없음, 무료)
+  allow_ping_probe: true       # 자동 실행 직전에만 Haiku 1단어 요청으로 실제 사용률 확인 (아주 소량 사용)
+  ping_model: haiku
+  oauth_endpoint: false        # 비공식 api/oauth/usage 엔드포인트 (권장하지 않음, 필요할 때만 true)
+  rate_limit_scale: fraction
+
+runner:
+  claude_cmd: null             # null = 자동 탐지. 예: ["C:/Users/me/.local/bin/claude.exe"]
+  default_model: sonnet        # opus/fable 은 사용량을 훨씬 빨리 소모합니다
+  default_permission_mode: acceptEdits
+  chunk_turns: 15              # 한 청크(프로세스 1회)의 최대 턴 수
+  chunk_budget_usd_default: 0.5   # 보정 전 1청크 비용 한도 (추정 API 가격 기준)
+  chunk_budget_usd_min: 0.2
+  chunk_budget_usd_max: 5.0
+  chunk_budget_fraction: 0.5   # 남은 격차의 이 비율만큼만 한 청크에 사용
+  chunk_timeout_minutes: 45
+  max_chunks_per_task: 12
+  kill_grace_seconds: 20
+
+notify:
+  desktop: true
+  desktop_app_id: auto         # auto | tokenalarm | powershell  (토스트가 안 보이면 powershell)
+  ntfy:
+    url: https://ntfy.sh
+    topic: null                # 예: my-secret-tokenalarm-topic-1234 (휴대폰 ntfy 앱에서 같은 토픽 구독)
+    token: null
+  webhooks: []
+  #  - { type: slack,   url: "https://hooks.slack.com/services/..." }
+  #  - { type: discord, url: "https://discord.com/api/webhooks/..." }
+  daily_summary_hour: 21       # 매일 이 시각 이후 하루 요약 1회 (null = 끔)
+  five_hour_warn_pct: 80
+  waste_warn_before: 72h       # 리셋까지 이만큼 남았을 때부터
+  waste_warn_pct: 30           # 예상 낭비가 이 이상이면 "토큰이 남을 것 같아요" 알림
+
+daemon:
+  tick_seconds: 60
+
+# tasks_file: tasks.yaml       # 기본: 데이터 폴더의 tasks.yaml
